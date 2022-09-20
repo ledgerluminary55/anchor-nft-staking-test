@@ -5,14 +5,9 @@ import {
   Metaplex,
   bundlrStorage,
   keypairIdentity,
-  Nft,
 } from "@metaplex-foundation/js"
-import { PublicKey, SystemProgram } from "@solana/web3.js"
-import {
-  TOKEN_PROGRAM_ID,
-  getAssociatedTokenAddress,
-  createMint,
-} from "@solana/spl-token"
+import { PublicKey } from "@solana/web3.js"
+import { getAssociatedTokenAddress, createMint } from "@solana/spl-token"
 import { PROGRAM_ID as METADATA_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata"
 
 describe("anchor-nft-staking", () => {
@@ -61,7 +56,7 @@ describe("anchor-nft-staking", () => {
       program.programId
     )
 
-    mint = await createMint(connection, wallet.payer, mintAuth, null, 6)
+    mint = await createMint(connection, wallet.payer, mintAuth, null, 2)
     console.log("Mint pubkey: ", mint.toBase58())
 
     tokenAddress = await getAssociatedTokenAddress(mint, wallet.publicKey)
@@ -157,7 +152,7 @@ describe("anchor-nft-staking", () => {
     console.log(`https://explorer.solana.com/tx/${txid}?cluster=devnet`)
 
     console.log("Sleeping for 3 sec...")
-    await new Promise((resolve) => setTimeout(resolve, 3000))
+    await new Promise((resolve) => setTimeout(resolve, 5000))
 
     const redeemTxid = await program.methods
       .redeem()
@@ -176,7 +171,7 @@ describe("anchor-nft-staking", () => {
     console.log(`https://explorer.solana.com/tx/${redeemTxid}?cluster=devnet`)
 
     console.log("Sleeping for 1 sec...")
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await new Promise((resolve) => setTimeout(resolve, 2000))
 
     const redeemTxid2 = await program.methods
       .redeem()
@@ -203,6 +198,9 @@ describe("anchor-nft-staking", () => {
         nftEdition: nft.masterEditionAddress,
         // stakeState: stakeStatePda,
         // programAuthority: delegatedAuthPda,
+        stakeMint: mint,
+        // stakeAuthority: mintAuth,
+        userStakeAta: tokenAddress,
         // tokenProgram: TOKEN_PROGRAM_ID,
         metadataProgram: METADATA_PROGRAM_ID,
       })

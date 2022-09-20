@@ -13,11 +13,9 @@ pub mod anchor_nft_staking {
     use super::*;
 
     pub fn stake(ctx: Context<Stake>) -> Result<()> {
-        msg!("Inside Anchor version of staking program");
-        // Getting clock directly
         let clock = Clock::get().unwrap();
 
-        // CPI to Token program to approve delegation
+        msg!("Approving delegate");
         let cpi_approve_program = ctx.accounts.token_program.to_account_info();
         let cpi_approve_accounts = Approve {
             to: ctx.accounts.nft_token_account.to_account_info(),
@@ -25,11 +23,10 @@ pub mod anchor_nft_staking {
             authority: ctx.accounts.user.to_account_info(),
         };
         let cpi_approve_ctx = CpiContext::new(cpi_approve_program, cpi_approve_accounts);
-        msg!("CPI to approve ix on token program");
         token::approve(cpi_approve_ctx, 1)?;
 
+        msg!("Freezing token account");
         let authority_bump = *ctx.bumps.get("program_authority").unwrap();
-        msg!("CPI to invoke freeze ix on token program");
         invoke_signed(
             &mpl_token_metadata::instruction::freeze_delegated_account(
                 ctx.accounts.metadata_program.key(),
@@ -47,11 +44,6 @@ pub mod anchor_nft_staking {
             ],
             &[&[b"authority", &[authority_bump]]],
         )?;
-
-        // if ctx.accounts.stake_state.is_initialized {
-        //     msg!("Account already initialized");
-        //     return err!(StakeError::AccountAlreadyInitialized);
-        // }
 
         ctx.accounts.stake_state.token_account = ctx.accounts.nft_token_account.key();
         ctx.accounts.stake_state.user_pubkey = ctx.accounts.user.key();
@@ -78,7 +70,8 @@ pub mod anchor_nft_staking {
         Ok(())
     }
 
-    pub fn unstake(ctx: Context<Unstake>) -> Result<()> {
+    pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
+        let clock = Clock::get()?;
         if !ctx.accounts.stake_state.is_initialized {
             msg!("Account is not initialized");
             return err!(StakeError::UnintializedAccount);
@@ -89,8 +82,51 @@ pub mod anchor_nft_staking {
             return err!(StakeError::InvalidStakeState);
         }
 
-        // Thaw NFT token account
-        msg!("Thawing NFT token account...");
+        msg!(
+            "Stake last redeem: {:?}",
+            ctx.accounts.stake_state.last_stake_redeem
+        );
+        msg!("Current time: {:?}", clock.unix_timestamp);
+        let unix_time = clock.unix_timestamp - ctx.accounts.stake_state.last_stake_redeem;
+        msg!("Seconds since last redeem: {}", unix_time);
+        let redeem_amount = unix_time * 100;
+        msg!("Elligible redeem amount: {}", redeem_amount / 100);
+
+        msg!("Minting staking rewards");
+        let auth_bump = *ctx.bumps.get("stake_authority").unwrap();
+        let seeds = &[b"mint".as_ref(), &[auth_bump]];
+        let signer = &[&seeds[..]];
+        let cpi_approve_program = ctx.accounts.token_program.to_account_info();
+        let cpi_accounts = MintTo {
+            mint: ctx.accounts.stake_mint.to_account_info(),
+            to: ctx.accounts.user_stake_ata.to_account_info(),
+            authority: ctx.accounts.stake_authority.to_account_info(),
+        };
+        let cpi_approve_ctx =
+            CpiContext::new_with_signer(cpi_approve_program, cpi_accounts, signer);
+        token::mint_to(cpi_approve_ctx, redeem_amount.try_into().unwrap())?;
+        ctx.accounts.stake_state.last_stake_redeem = clock.unix_timestamp;
+        msg!(
+            "Updated last stake redeem time: {:?}",
+            ctx.accounts.stake_state.last_stake_redeem
+        );
+
+        Ok(())
+    }
+
+    pub fn unstake(ctx: Context<Unstake>) -> Result<()> {
+        let clock = Clock::get()?;
+        if !ctx.accounts.stake_state.is_initialized {
+            msg!("Account is not initialized");
+            return err!(StakeError::UnintializedAccount);
+        }
+
+        if ctx.accounts.stake_state.stake_state != StakeState::Staked {
+            msg!("Stake account is not staking anything");
+            return err!(StakeError::InvalidStakeState);
+        }
+
+        msg!("Thawing token account");
         let delegate_bump = *ctx.bumps.get("program_authority").unwrap();
         invoke_signed(
             &mpl_token_metadata::instruction::thaw_delegated_account(
@@ -110,7 +146,7 @@ pub mod anchor_nft_staking {
             &[&[b"authority", &[delegate_bump]]],
         )?;
 
-        msg!("Revoking delegation...");
+        msg!("Revoking delegation");
         // CPI to Token program to revoke delegation of nft token account
         let cpi_revoke_program = ctx.accounts.token_program.to_account_info();
         let cpi_accounts = Revoke {
@@ -124,47 +160,16 @@ pub mod anchor_nft_staking {
         ctx.accounts.stake_state.stake_state = StakeState::Unstaked;
 
         msg!(
-            "NFT token account: {:?}",
-            ctx.accounts.stake_state.token_account
-        );
-        msg!("User pubkey: {:?}", ctx.accounts.stake_state.user_pubkey);
-        msg!("Stake state: {:?}", ctx.accounts.stake_state.stake_state);
-        msg!(
-            "Stake start time: {:?}",
-            ctx.accounts.stake_state.stake_start_time
-        );
-        msg!(
-            "Time since last redeem: {:?}",
-            ctx.accounts.stake_state.last_stake_redeem
-        );
-
-        Ok(())
-    }
-
-    pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
-        // Getting clock directly
-        let clock = Clock::get()?;
-        if !ctx.accounts.stake_state.is_initialized {
-            msg!("Account is not initialized");
-            return err!(StakeError::UnintializedAccount);
-        }
-
-        if ctx.accounts.stake_state.stake_state != StakeState::Staked {
-            msg!("Stake account is not staking anything");
-            return err!(StakeError::InvalidStakeState);
-        }
-
-        msg!(
             "Stake last redeem: {:?}",
             ctx.accounts.stake_state.last_stake_redeem
         );
         msg!("Current time: {:?}", clock.unix_timestamp);
         let unix_time = clock.unix_timestamp - ctx.accounts.stake_state.last_stake_redeem;
         msg!("Seconds since last redeem: {}", unix_time);
-        let redeem_amount = 1000000 * unix_time;
-        msg!("Elligible redeem amount in lamports: {}", redeem_amount);
+        let redeem_amount = unix_time * 100;
+        msg!("Elligible redeem amount: {}", redeem_amount / 100);
 
-        // CPI to Token program to mint tokens
+        msg!("Minting staking rewards");
         let auth_bump = *ctx.bumps.get("stake_authority").unwrap();
         let seeds = &[b"mint".as_ref(), &[auth_bump]];
         let signer = &[&seeds[..]];
@@ -176,11 +181,21 @@ pub mod anchor_nft_staking {
         };
         let cpi_approve_ctx =
             CpiContext::new_with_signer(cpi_approve_program, cpi_accounts, signer);
-        msg!("CPI to mint ix on token program");
         token::mint_to(cpi_approve_ctx, redeem_amount.try_into().unwrap())?;
         ctx.accounts.stake_state.last_stake_redeem = clock.unix_timestamp;
+
         msg!(
-            "Updated last stake time: {:?}",
+            "NFT token account: {:?}",
+            ctx.accounts.stake_state.token_account
+        );
+        msg!("User pubkey: {:?}", ctx.accounts.stake_state.user_pubkey);
+        msg!("Stake state: {:?}", ctx.accounts.stake_state.stake_state);
+        msg!(
+            "Stake start time: {:?}",
+            ctx.accounts.stake_state.stake_start_time
+        );
+        msg!(
+            "Time since last redeem: {:?}",
             ctx.accounts.stake_state.last_stake_redeem
         );
 
@@ -218,32 +233,6 @@ pub struct Stake<'info> {
 }
 
 #[derive(Accounts)]
-pub struct Unstake<'info> {
-    #[account(mut)]
-    pub user: Signer<'info>,
-    #[account(
-        mut,
-        associated_token::mint = nft_mint,
-        associated_token::authority = user,)]
-    pub nft_token_account: Account<'info, TokenAccount>,
-    pub nft_mint: Account<'info, Mint>,
-    /// CHECK: THis is not dangerous because we don't read or write from this account
-    pub nft_edition: AccountInfo<'info>,
-    #[account(
-        mut,
-        seeds = [user.key().as_ref(), nft_token_account.key().as_ref()],
-        bump
-    )]
-    pub stake_state: Account<'info, UserStakeInfo>,
-    /// CHECK: only used as a signing PDA
-    #[account(mut, seeds = [b"authority".as_ref()], bump)]
-    pub program_authority: AccountInfo<'info>,
-    pub token_program: Program<'info, Token>,
-    /// CHECK: This is not dangerous because we don't read or write from this account
-    pub metadata_program: UncheckedAccount<'info>,
-}
-
-#[derive(Accounts)]
 pub struct Redeem<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
@@ -270,6 +259,47 @@ pub struct Redeem<'info> {
     )]
     pub user_stake_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Unstake<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(
+        mut,
+        associated_token::mint = nft_mint,
+        associated_token::authority = user,)]
+    pub nft_token_account: Account<'info, TokenAccount>,
+    pub nft_mint: Account<'info, Mint>,
+    /// CHECK: THis is not dangerous because we don't read or write from this account
+    pub nft_edition: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [user.key().as_ref(), nft_token_account.key().as_ref()],
+        bump
+    )]
+    pub stake_state: Account<'info, UserStakeInfo>,
+    /// CHECK: only used as a signing PDA
+    #[account(mut, seeds = [b"authority".as_ref()], bump)]
+    pub program_authority: AccountInfo<'info>,
+    #[account(mut)]
+    pub stake_mint: Account<'info, Mint>,
+    /// CHECK: only used as a signing PDA
+    #[account(seeds = [b"mint".as_ref()], bump)]
+    pub stake_authority: AccountInfo<'info>,
+    #[account(
+        init_if_needed,
+        payer = user,
+        associated_token::mint = stake_mint,
+        associated_token::authority = user
+    )]
+    pub user_stake_ata: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    /// CHECK: This is not dangerous because we don't read or write from this account
+    pub metadata_program: UncheckedAccount<'info>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
